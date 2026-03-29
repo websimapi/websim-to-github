@@ -1,52 +1,49 @@
 'use strict';
 
 // ── DOM refs ──────────────────────────────────────────────────────────────
-const badgeGh      = document.getElementById('badge-gh');
-const badgeWs      = document.getElementById('badge-ws');
-const ghConnected  = document.getElementById('gh-connected');
+const badgeGh        = document.getElementById('badge-gh');
+const badgeWs        = document.getElementById('badge-ws');
+const ghConnected    = document.getElementById('gh-connected');
 const ghDisconnected = document.getElementById('gh-disconnected');
-const ghUsername   = document.getElementById('gh-username');
-const btnGhLogout  = document.getElementById('btn-gh-logout');
+const ghUsername     = document.getElementById('gh-username');
+const btnGhLogout    = document.getElementById('btn-gh-logout');
 
-const wsCookie     = document.getElementById('ws-cookie');
-const btnWsSave    = document.getElementById('btn-ws-save');
-const btnWsClear   = document.getElementById('btn-ws-clear');
+const wsCookie    = document.getElementById('ws-cookie');
+const btnWsSave   = document.getElementById('btn-ws-save');
+const btnWsClear  = document.getElementById('btn-ws-clear');
 
-const wsUsername   = document.getElementById('ws-username');
+const wsUsername    = document.getElementById('ws-username');
 const skipCompleted = document.getElementById('skip-completed');
-const maxProjects  = document.getElementById('max-projects');
-const btnStart     = document.getElementById('btn-start');
-const btnStop      = document.getElementById('btn-stop');
-const progressWrap = document.getElementById('progress-bar-wrap');
-const progressFill = document.getElementById('progress-fill');
+const maxProjects   = document.getElementById('max-projects');
+const btnStart      = document.getElementById('btn-start');
+const btnStop       = document.getElementById('btn-stop');
+const progressWrap  = document.getElementById('progress-bar-wrap');
+const progressFill  = document.getElementById('progress-fill');
 const progressLabel = document.getElementById('progress-label');
 
-const busyBanner   = document.getElementById('busy-banner');
-const busyInfo     = document.getElementById('busy-info');
-const btnWatch     = document.getElementById('btn-watch');
-
-const checkpointBanner = document.getElementById('checkpoint-banner');
-const checkpointInfo   = document.getElementById('checkpoint-info');
+const checkpointBanner      = document.getElementById('checkpoint-banner');
+const checkpointInfo        = document.getElementById('checkpoint-info');
 const btnContinueCheckpoint = document.getElementById('btn-continue-checkpoint');
-const btnClearCheckpoint = document.getElementById('btn-clear-checkpoint');
+const btnClearCheckpoint    = document.getElementById('btn-clear-checkpoint');
 
-const resumeBanner = document.getElementById('resume-banner');
-const resumeInfo   = document.getElementById('resume-info');
-const btnResume    = document.getElementById('btn-resume');
+const resumeBanner    = document.getElementById('resume-banner');
+const resumeInfo      = document.getElementById('resume-info');
+const btnResume       = document.getElementById('btn-resume');
 const btnDismissResume = document.getElementById('btn-dismiss-resume');
 
-const trackerList  = document.getElementById('tracker-list');
+const trackerList     = document.getElementById('tracker-list');
 const btnClearTracker = document.getElementById('btn-clear-tracker');
 
-const logOutput    = document.getElementById('log-output');
-const btnClearLog  = document.getElementById('btn-clear-log');
+const logOutput   = document.getElementById('log-output');
+const btnClearLog = document.getElementById('btn-clear-log');
 
-const projectList  = document.getElementById('project-list');
+const projectList = document.getElementById('project-list');
 
 // ── State ─────────────────────────────────────────────────────────────────
 let pollTimer = null;
 let lastLogTs = 0;
 let savedRunState = null;
+let isGhConnected = false;
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 function esc(s) {
@@ -59,9 +56,8 @@ function setBadge(el, cls, label) {
 }
 
 function enableStart() {
-  const ghOk = ghConnected.style.display !== 'none';
   const hasUser = wsUsername.value.trim().length > 0;
-  btnStart.disabled = !(ghOk && hasUser);
+  btnStart.disabled = !(isGhConnected && hasUser);
 }
 
 wsUsername.addEventListener('input', enableStart);
@@ -73,12 +69,14 @@ async function refreshAuth() {
     const d = await r.json();
 
     if (d.github.connected) {
+      isGhConnected = true;
       setBadge(badgeGh, 'connected', `GitHub: @${d.github.user}`);
       ghConnected.style.display = '';
       ghDisconnected.style.display = 'none';
       ghUsername.textContent = d.github.user;
       enableStart();
     } else {
+      isGhConnected = false;
       setBadge(badgeGh, '', 'GitHub: Not Connected');
       ghConnected.style.display = 'none';
       ghDisconnected.style.display = '';
@@ -118,10 +116,11 @@ btnWsClear.addEventListener('click', async () => {
   await refreshAuth();
 });
 
-// ── Checkpoint banner ──────────────────────────────────────────────────────
+// ── Checkpoint banner ─────────────────────────────────────────────────────
 let savedCheckpoint = null;
 
 async function checkCheckpoint() {
+  if (!isGhConnected) { checkpointBanner.style.display = 'none'; return; }
   try {
     const r = await fetch('/api/checkpoint');
     savedCheckpoint = r.ok ? await r.json() : null;
@@ -160,6 +159,7 @@ btnClearCheckpoint.addEventListener('click', async () => {
 
 // ── Resume banner ─────────────────────────────────────────────────────────
 async function checkResume() {
+  if (!isGhConnected) { resumeBanner.style.display = 'none'; return; }
   try {
     const r = await fetch('/api/run-state');
     if (!r.ok) { resumeBanner.style.display = 'none'; return; }
@@ -238,18 +238,21 @@ function startPolling() {
 }
 
 async function pollStatus() {
+  if (!isGhConnected) return;
   try {
     const r = await fetch('/api/status');
+    if (r.status === 401) return; // not logged in, skip silently
     const d = await r.json();
     renderStatus(d);
 
     if (d.isRunning) {
-      showBusy(d);
+      btnStart.disabled = true;
+      btnStop.disabled = false;
+      progressWrap.style.display = '';
     } else {
-      busyBanner.style.display = 'none';
       clearInterval(pollTimer);
       pollTimer = null;
-      btnStart.disabled = false;
+      enableStart();
       btnStop.disabled = true;
       btnStop.textContent = 'Stop';
       progressWrap.style.display = 'none';
@@ -300,25 +303,22 @@ function renderStatus(data) {
     el.className = `project-item ${statusCls}`;
 
     const icon = { queued:'○', fetching:'⟳', processing:'⟳', pushing:'↑', done:'✓', failed:'!', skipped:'—' }[p.status] || '○';
-    const iconCls = p.status;
 
     let sub = `/${esc(p.slug)}`;
     if (p.githubUrl) sub += ` · <a href="${esc(p.githubUrl)}" target="_blank">→ GitHub</a>`;
 
-    // Steps detail for failed/active
     let stepsHtml = '';
     if (p.steps && (p.status === 'failed' || p.isCurrent)) {
       const entries = Object.entries(p.steps);
       if (entries.length) {
         stepsHtml = '<div class="steps-list">' + entries.map(([k, v]) => {
           const sc = v.status === 'ok' ? 'step-ok' : v.status === 'error' ? 'step-err' : v.status === 'warn' ? 'step-warn' : 'step-run';
-          const icon = v.status === 'ok' ? '✓' : v.status === 'error' ? '✗' : v.status === 'warn' ? '⚠' : '…';
-          return `<span class="step ${sc}">${icon} ${esc(k)}${v.detail ? ': ' + esc(v.detail) : ''}</span>`;
+          const ic = v.status === 'ok' ? '✓' : v.status === 'error' ? '✗' : v.status === 'warn' ? '⚠' : '…';
+          return `<span class="step ${sc}">${ic} ${esc(k)}${v.detail ? ': ' + esc(v.detail) : ''}</span>`;
         }).join('') + '</div>';
       }
     }
 
-    // Error + retry
     let errorHtml = '';
     if (p.status === 'failed') {
       errorHtml = `
@@ -328,7 +328,7 @@ function renderStatus(data) {
     }
 
     el.innerHTML = `
-      <div class="pi-icon ${iconCls}">${icon}</div>
+      <div class="pi-icon ${p.status}">${icon}</div>
       <div class="pi-info">
         <div class="pi-title">${esc(p.title || p.slug)}</div>
         <div class="pi-sub">${sub}</div>
@@ -339,7 +339,6 @@ function renderStatus(data) {
     projectList.appendChild(el);
   }
 
-  // Attach retry handlers
   projectList.querySelectorAll('.btn-retry').forEach(btn => {
     btn.addEventListener('click', async () => {
       const id = btn.dataset.id;
@@ -360,6 +359,10 @@ function renderStatus(data) {
 
 // ── Tracker ───────────────────────────────────────────────────────────────
 async function refreshTracker() {
+  if (!isGhConnected) {
+    trackerList.innerHTML = '<p class="hint">Connect GitHub to see your exports.</p>';
+    return;
+  }
   const items = await fetch('/api/tracker').then(r => r.json()).catch(() => []);
   if (!items.length) {
     trackerList.innerHTML = '<p class="hint">No completed exports yet.</p>';
@@ -396,8 +399,8 @@ btnClearLog.addEventListener('click', () => {
 });
 
 // ── Fix Broken HTML toggle ─────────────────────────────────────────────────
-const fixBrokenHtml  = document.getElementById('fix-broken-html');
-const smartScan      = document.getElementById('smart-scan');
+const fixBrokenHtml = document.getElementById('fix-broken-html');
+const smartScan     = document.getElementById('smart-scan');
 
 fixBrokenHtml.addEventListener('change', () => {
   if (fixBrokenHtml.checked) {
@@ -414,30 +417,22 @@ fixBrokenHtml.addEventListener('change', () => {
 // ── Init ──────────────────────────────────────────────────────────────────
 if (window.location.search.includes('github=connected')) history.replaceState({}, '', '/');
 
-refreshAuth();
-refreshTracker();
-checkResume();
-checkCheckpoint();
-setInterval(refreshAuth, 8000);
+refreshAuth().then(() => {
+  refreshTracker();
+  checkResume();
+  checkCheckpoint();
 
-// If server was already running when page loaded, show busy or start polling
-fetch('/api/status').then(r => r.json()).then(d => {
-  if (d.isRunning) {
-    showBusy(d);
-    startPolling();
+  // If our own export was already running when page loaded, resume polling
+  if (isGhConnected) {
+    fetch('/api/status').then(r => r.json()).then(d => {
+      if (d.isRunning) {
+        btnStart.disabled = true;
+        btnStop.disabled = false;
+        progressWrap.style.display = '';
+        startPolling();
+      }
+    }).catch(() => {});
   }
-}).catch(() => {});
-
-function showBusy(d) {
-  if (d.ownerUser) {
-    busyInfo.textContent = `@${d.ownerUser} is exporting @${d.username || '?'} — ${d.projects?.filter(p=>p.status==='done').length||0} done`;
-    busyBanner.style.display = '';
-    btnStart.disabled = true;
-    btnStop.disabled = false;
-    progressWrap.style.display = '';
-  }
-}
-
-btnWatch.addEventListener('click', () => {
-  busyBanner.style.display = 'none';
 });
+
+setInterval(refreshAuth, 8000);
