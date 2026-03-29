@@ -501,7 +501,7 @@ async function processOneProject(project, ghToken, ghUser, cookie, opts = {}) {
   // 2. Create GitHub repo
   const repoName = github.safeRepoName(`websim-${slug}`);
   step('create-repo', 'creating', repoName);
-  const repo = await github.createRepo(repoName, `WebSim: ${title}`);
+  const repo = await github.createRepo(repoName, `WebSim: ${title}`, ghToken, ghUser);
   if (!repo.ok) {
     step('create-repo', 'error', repo.error);
     throw new Error(`Create repo: ${repo.error}`);
@@ -571,7 +571,7 @@ async function processOneProject(project, ghToken, ghUser, cookie, opts = {}) {
     let verified = false;
     for (let attempt = 1; attempt <= 4; attempt++) {
       await sleep(attempt * 1500); // 1.5s, 3s, 4.5s, 6s
-      verified = await github.repoHasCommits(ghUser, repoName);
+      verified = await github.repoHasCommits(ghUser, repoName, ghToken);
       if (verified) break;
       if (attempt < 4) step('verify', 'checking', `attempt ${attempt}/4…`);
     }
