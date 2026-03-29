@@ -25,6 +25,11 @@ const busyBanner   = document.getElementById('busy-banner');
 const busyInfo     = document.getElementById('busy-info');
 const btnWatch     = document.getElementById('btn-watch');
 
+const checkpointBanner = document.getElementById('checkpoint-banner');
+const checkpointInfo   = document.getElementById('checkpoint-info');
+const btnContinueCheckpoint = document.getElementById('btn-continue-checkpoint');
+const btnClearCheckpoint = document.getElementById('btn-clear-checkpoint');
+
 const resumeBanner = document.getElementById('resume-banner');
 const resumeInfo   = document.getElementById('resume-info');
 const btnResume    = document.getElementById('btn-resume');
@@ -113,6 +118,46 @@ btnWsClear.addEventListener('click', async () => {
   await refreshAuth();
 });
 
+// ── Checkpoint banner ──────────────────────────────────────────────────────
+let savedCheckpoint = null;
+
+async function checkCheckpoint() {
+  try {
+    const r = await fetch('/api/checkpoint');
+    savedCheckpoint = r.ok ? await r.json() : null;
+    if (savedCheckpoint && !savedCheckpoint.complete) {
+      const ago = savedCheckpoint.updatedAt ? timeSince(savedCheckpoint.updatedAt) : '';
+      checkpointInfo.textContent = `@${savedCheckpoint.username} — page ${savedCheckpoint.pageNum}, ${savedCheckpoint.totalSeen} projects scanned${ago ? ', ' + ago : ''}`;
+      checkpointBanner.style.display = '';
+    } else if (savedCheckpoint?.complete) {
+      checkpointInfo.textContent = `@${savedCheckpoint.username} — full scan completed, ${savedCheckpoint.totalSeen} projects, ${savedCheckpoint.pageNum} pages`;
+      checkpointBanner.style.display = '';
+    } else {
+      checkpointBanner.style.display = 'none';
+    }
+  } catch (_) { checkpointBanner.style.display = 'none'; }
+}
+
+function timeSince(iso) {
+  const mins = Math.round((Date.now() - new Date(iso)) / 60000);
+  if (mins < 2) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  return `${Math.round(mins/60)}h ago`;
+}
+
+btnContinueCheckpoint.addEventListener('click', async () => {
+  if (!savedCheckpoint) return;
+  checkpointBanner.style.display = 'none';
+  wsUsername.value = savedCheckpoint.username;
+  await startExport(savedCheckpoint.cursor);
+});
+
+btnClearCheckpoint.addEventListener('click', async () => {
+  await fetch('/api/checkpoint', { method: 'DELETE' });
+  savedCheckpoint = null;
+  checkpointBanner.style.display = 'none';
+});
+
 // ── Resume banner ─────────────────────────────────────────────────────────
 async function checkResume() {
   try {
@@ -120,7 +165,7 @@ async function checkResume() {
     if (!r.ok) { resumeBanner.style.display = 'none'; return; }
     savedRunState = await r.json();
     if (savedRunState) {
-      resumeInfo.textContent = `@${savedRunState.username} — ${savedRunState.processedCount} projects seen, cursor saved ${new Date(savedRunState.updatedAt || savedRunState.savedAt).toLocaleTimeString()}`;
+      resumeInfo.textContent = `@${savedRunState.username} — page ${savedRunState.pageNum || '?'}, ${savedRunState.processedCount} projects seen`;
       resumeBanner.style.display = '';
     } else {
       resumeBanner.style.display = 'none';
@@ -216,16 +261,18 @@ async function pollStatus() {
 
 function renderStatus(data) {
   // Progress bar
-  if (data.totalProjects > 0) {
+  if (data.totalProjects > 0 || data.isRunning) {
     const done = data.projects.filter(p => ['done','skipped'].includes(p.status)).length;
-    progressFill.style.width = Math.round(done / data.totalProjects * 100) + '%';
-    let lbl = `${done}/${data.totalProjects} projects`;
+    const pct = data.totalProjects > 0 ? Math.round(done / data.totalProjects * 100) : 0;
+    progressFill.style.width = pct + '%';
+    let lbl = data.currentPage ? `Page ${data.currentPage} · ` : '';
+    lbl += `${done}/${data.totalProjects} this session`;
     if (data.currentProject) {
       const cp = data.currentProject;
       if (cp.revisionsTotal > 0)
         lbl += ` — v${cp.revisionsDone}/${cp.revisionsTotal} of "${cp.title}"`;
       else
-        lbl += ` — ${cp.status}: "${cp.title}"`;
+        lbl += ` — "${cp.title}"`;
     }
     progressLabel.textContent = lbl;
   }
@@ -370,6 +417,7 @@ if (window.location.search.includes('github=connected')) history.replaceState({}
 refreshAuth();
 refreshTracker();
 checkResume();
+checkCheckpoint();
 setInterval(refreshAuth, 8000);
 
 // If server was already running when page loaded, show busy or start polling

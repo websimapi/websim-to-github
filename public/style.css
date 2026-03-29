@@ -92,6 +92,10 @@ header h1 {
   background: rgba(245,158,11,0.12);
   border-color: var(--warn);
 }
+.resume-banner.checkpoint {
+  background: rgba(16,185,129,0.10);
+  border-color: #10b981;
+}
 
 /* ---- Advanced collapsible section ---- */
 details.advanced-section {

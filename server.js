@@ -35,7 +35,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 function sessionToken(req) { return req.session.githubToken || null; }
 function sessionUser(req) { return req.session.githubUser || null; }
 
-// ── Run-state persistence (survives page reloads) ──────────────────────────
+// ── Run-state: tracks interrupted run (cleared on clean finish) ────────────
 const RUN_STATE_FILE = path.join(__dirname, 'data', 'run-state.json');
 
 function saveRunState(data) {
@@ -56,17 +56,40 @@ function clearRunState() {
   try { if (fs.existsSync(RUN_STATE_FILE)) fs.unlinkSync(RUN_STATE_FILE); } catch (_) {}
 }
 
+// ── Checkpoint: permanent record of deepest page reached (never auto-cleared)
+// Updated after every page. Lets user continue a scan even after a full restart.
+const CHECKPOINT_FILE = path.join(__dirname, 'data', 'checkpoint.json');
+
+function saveCheckpoint(data) {
+  try {
+    fs.mkdirSync(path.dirname(CHECKPOINT_FILE), { recursive: true });
+    fs.writeFileSync(CHECKPOINT_FILE, JSON.stringify(data, null, 2));
+  } catch (e) { console.error('[Checkpoint] save failed:', e.message); }
+}
+
+function loadCheckpoint() {
+  try {
+    if (fs.existsSync(CHECKPOINT_FILE)) return JSON.parse(fs.readFileSync(CHECKPOINT_FILE, 'utf8'));
+  } catch (_) {}
+  return null;
+}
+
+function clearCheckpoint() {
+  try { if (fs.existsSync(CHECKPOINT_FILE)) fs.unlinkSync(CHECKPOINT_FILE); } catch (_) {}
+}
+
 // ── In-memory state ────────────────────────────────────────────────────────
 const state = {
   isRunning: false,
   stopRequested: false,
   username: null,
-  ownerUser: null,     // GitHub user who started current job
+  ownerUser: null,
   log: [],
   projects: [],
   currentIndex: -1,
   currentRevision: 0,
   totalRevisions: 0,
+  currentPage: 0,
 };
 
 function addLog(msg, level = 'info') {
@@ -173,6 +196,11 @@ app.delete('/api/tracker/:id', (req, res) => { tracker.remove(req.params.id); re
 app.get('/api/run-state', (_req, res) => res.json(loadRunState() || null));
 app.delete('/api/run-state', (_req, res) => { clearRunState(); res.json({ ok: true }); });
 
+// ── Checkpoint routes (permanent deep-scan position) ──────────────────────
+
+app.get('/api/checkpoint', (_req, res) => res.json(loadCheckpoint() || null));
+app.delete('/api/checkpoint', (_req, res) => { clearCheckpoint(); res.json({ ok: true }); });
+
 // ── Status polling ─────────────────────────────────────────────────────────
 
 app.get('/api/status', (_req, res) => {
@@ -181,6 +209,7 @@ app.get('/api/status', (_req, res) => {
     isRunning: state.isRunning,
     username: state.username,
     ownerUser: state.ownerUser,
+    currentPage: state.currentPage,
     totalProjects: state.projects.length,
     currentIndex: state.currentIndex,
     currentProject: proj ? {
@@ -292,53 +321,54 @@ async function runProcessing(username, ghToken, ghUser, skipCompleted, maxProjec
   // fixBrokenHtml mode ignores skip-completed so every project gets checked
   const effectiveSkip = skipCompleted && !fixBrokenHtml;
   if (fixBrokenHtml) addLog('Fix Broken HTML mode ON — will check index.html in each GitHub repo');
-  if (smartScan) addLog('Smart Scan ON — will fast-skip already-done pages and stop when no new projects found');
+  // fastMode: reduces inter-page delay when all projects on a page are already done
+  // Does NOT stop early — always scans to the end
+  if (smartScan) addLog('Fast Mode ON — done-only pages will be skipped quickly (300ms delay instead of 2s)');
 
-  let consecutiveAllDonePages = 0;
-  const SMART_STOP_THRESHOLD = 3; // stop after this many consecutive all-done pages
+  let pageNum = resumeCursor ? (loadCheckpoint()?.pageNum || 0) : 0;
 
   try {
-    addLog(`${resumeCursor ? 'Resuming' : 'Starting'} export for @${username}${maxProjects ? ` (max ${maxProjects})` : ''}`);
+    addLog(`${resumeCursor ? 'Continuing from checkpoint' : 'Starting fresh scan'} for @${username}${maxProjects ? ` (max ${maxProjects})` : ''}`);
 
     while (true) {
       if (state.stopRequested) { addLog('Stopped.'); break; }
 
+      pageNum++;
+      state.currentPage = pageNum;
+
       // ── Fetch one page ──
-      addLog(`Fetching page… (${totalSeen} seen so far)`);
+      addLog(`Page ${pageNum} — fetched ${totalSeen} so far`);
       let page;
       try {
         page = await websim.fetchProjectsPage(username, cookie, cursor);
       } catch (e) {
-        addLog(`Page fetch failed: ${e.message}`, 'error');
-        addLog(`Saving cursor so you can resume. Use cursor: "${cursor || 'start'}"`, 'warn');
-        saveRunState({ username, cursor, processedCount: totalSeen, error: e.message, savedAt: new Date().toISOString() });
+        addLog(`Page ${pageNum} fetch failed: ${e.message}`, 'error');
+        // Save both run-state (for resume banner) and update checkpoint
+        const stateData = { username, cursor, pageNum, processedCount: totalSeen, error: e.message, savedAt: new Date().toISOString() };
+        saveRunState(stateData);
+        saveCheckpoint({ username, cursor, pageNum, totalSeen, updatedAt: new Date().toISOString(), complete: false });
+        addLog(`Checkpoint saved at page ${pageNum} — use "Continue from checkpoint" to resume`, 'warn');
         break;
       }
 
       const { projects: pageProjects, nextCursor } = page;
-      if (!pageProjects.length) { addLog('No more projects.'); break; }
+      if (!pageProjects.length) { addLog('No more projects — reached end of list.'); break; }
 
-      // ── Smart Scan: check if entire page is already done ──
+      // ── Fast Mode: if all projects on this page are already done, skip quickly ──
       if (smartScan && effectiveSkip) {
         const allDone = pageProjects.every(p => tracker.isCompleted(p.id));
         if (allDone) {
-          consecutiveAllDonePages++;
-          addLog(`Page all done (${consecutiveAllDonePages}/${SMART_STOP_THRESHOLD} consecutive) — fast skip`);
           totalSeen += pageProjects.length;
-          if (consecutiveAllDonePages >= SMART_STOP_THRESHOLD) {
-            addLog(`Smart Scan: ${SMART_STOP_THRESHOLD} consecutive all-done pages — no new projects. Stopping.`);
-            break;
-          }
+          addLog(`Page ${pageNum} — all ${pageProjects.length} already done, fast skip`);
           if (!nextCursor) break;
           cursor = nextCursor;
-          await sleep(300); // minimal delay — just pacing the API
+          saveCheckpoint({ username, cursor, pageNum, totalSeen, updatedAt: new Date().toISOString(), complete: false });
+          await sleep(300); // minimal API pacing
           continue;
-        } else {
-          consecutiveAllDonePages = 0; // reset on page with new content
         }
       }
 
-      // Append to visible list
+      // Append new projects to the visible list
       for (const p of pageProjects) {
         if (!state.projects.find(x => x.id === p.id)) {
           p._status = 'queued';
@@ -367,7 +397,6 @@ async function runProcessing(username, ghToken, ghUser, skipCompleted, maxProjec
         try {
           await processOneProject(project, ghToken, ghUser, cookie, { fixBrokenHtml });
         } catch (e) {
-          // Error already logged inside processOneProject; continue to next
           project._status = 'failed';
           project._error = e.message;
           tracker.markFailed(project, e.message);
@@ -380,12 +409,18 @@ async function runProcessing(username, ghToken, ghUser, skipCompleted, maxProjec
       if (maxProjects > 0 && totalSeen >= maxProjects) break;
 
       cursor = nextCursor;
-      saveRunState({ username, cursor, processedCount: totalSeen, updatedAt: new Date().toISOString() });
+      // Save checkpoint after every page so we can always continue
+      saveCheckpoint({ username, cursor, pageNum, totalSeen, updatedAt: new Date().toISOString(), complete: false });
+      saveRunState({ username, cursor, pageNum, processedCount: totalSeen, updatedAt: new Date().toISOString() });
       await sleep(2000);
     }
 
-    if (!state.stopRequested) clearRunState();
-    addLog(state.stopRequested ? 'Stopped by user.' : `All done! ${totalSeen} projects seen.`);
+    if (!state.stopRequested) {
+      clearRunState();
+      // Mark checkpoint as complete so UI can show "full scan done"
+      saveCheckpoint({ username, cursor, pageNum, totalSeen, updatedAt: new Date().toISOString(), complete: true });
+    }
+    addLog(state.stopRequested ? `Stopped at page ${pageNum} — ${totalSeen} seen.` : `Scan complete! ${totalSeen} projects seen across ${pageNum} pages.`);
   } finally {
     state.isRunning = false;
   }
