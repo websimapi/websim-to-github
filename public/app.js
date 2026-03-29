@@ -165,6 +165,7 @@ async function startExport(resumeCursor) {
       maxProjects: parseInt(maxProjects.value) || 0,
       resumeCursor: resumeCursor || null,
       fixBrokenHtml: fixBrokenHtml.checked,
+      smartScan: smartScan.checked,
     }),
   });
   const d = await res.json();
@@ -349,13 +350,17 @@ btnClearLog.addEventListener('click', () => {
 
 // ── Fix Broken HTML toggle ─────────────────────────────────────────────────
 const fixBrokenHtml  = document.getElementById('fix-broken-html');
+const smartScan      = document.getElementById('smart-scan');
 
 fixBrokenHtml.addEventListener('change', () => {
   if (fixBrokenHtml.checked) {
     skipCompleted.checked = false;
     skipCompleted.disabled = true;
+    smartScan.checked = false;
+    smartScan.disabled = true;
   } else {
     skipCompleted.disabled = false;
+    smartScan.disabled = false;
   }
 });
 

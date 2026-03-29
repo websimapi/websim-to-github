@@ -215,7 +215,7 @@ app.post('/api/process/start', async (req, res) => {
     return res.status(409).json({ error: `Busy — @${state.ownerUser || state.username} is currently exporting. Please wait.` });
   }
 
-  const { username, skipCompleted = true, maxProjects = 0, resumeCursor = null, fixBrokenHtml = false } = req.body;
+  const { username, skipCompleted = true, maxProjects = 0, resumeCursor = null, fixBrokenHtml = false, smartScan = false } = req.body;
   if (!username) return res.status(400).json({ error: 'username required' });
 
   const ghToken = sessionToken(req);
@@ -233,7 +233,7 @@ app.post('/api/process/start', async (req, res) => {
 
   res.json({ ok: true });
 
-  runProcessing(username, ghToken, ghUser, skipCompleted, parseInt(maxProjects) || 0, resumeCursor, fixBrokenHtml, req.session.websimCookie || null)
+  runProcessing(username, ghToken, ghUser, skipCompleted, parseInt(maxProjects) || 0, resumeCursor, fixBrokenHtml, req.session.websimCookie || null, smartScan)
     .catch(e => { addLog(`Fatal: ${e.message}`, 'error'); state.isRunning = false; });
 });
 
@@ -277,7 +277,7 @@ app.post('/api/process/retry/:id', async (req, res) => {
 
 // ── Main pipeline ──────────────────────────────────────────────────────────
 
-async function runProcessing(username, ghToken, ghUser, skipCompleted, maxProjects, resumeCursor, fixBrokenHtml = false, websimCookie = null) {
+async function runProcessing(username, ghToken, ghUser, skipCompleted, maxProjects, resumeCursor, fixBrokenHtml = false, websimCookie = null, smartScan = false) {
   state.isRunning = true;
   state.stopRequested = false;
   state.username = username;
@@ -292,6 +292,10 @@ async function runProcessing(username, ghToken, ghUser, skipCompleted, maxProjec
   // fixBrokenHtml mode ignores skip-completed so every project gets checked
   const effectiveSkip = skipCompleted && !fixBrokenHtml;
   if (fixBrokenHtml) addLog('Fix Broken HTML mode ON — will check index.html in each GitHub repo');
+  if (smartScan) addLog('Smart Scan ON — will fast-skip already-done pages and stop when no new projects found');
+
+  let consecutiveAllDonePages = 0;
+  const SMART_STOP_THRESHOLD = 3; // stop after this many consecutive all-done pages
 
   try {
     addLog(`${resumeCursor ? 'Resuming' : 'Starting'} export for @${username}${maxProjects ? ` (max ${maxProjects})` : ''}`);
@@ -313,6 +317,26 @@ async function runProcessing(username, ghToken, ghUser, skipCompleted, maxProjec
 
       const { projects: pageProjects, nextCursor } = page;
       if (!pageProjects.length) { addLog('No more projects.'); break; }
+
+      // ── Smart Scan: check if entire page is already done ──
+      if (smartScan && effectiveSkip) {
+        const allDone = pageProjects.every(p => tracker.isCompleted(p.id));
+        if (allDone) {
+          consecutiveAllDonePages++;
+          addLog(`Page all done (${consecutiveAllDonePages}/${SMART_STOP_THRESHOLD} consecutive) — fast skip`);
+          totalSeen += pageProjects.length;
+          if (consecutiveAllDonePages >= SMART_STOP_THRESHOLD) {
+            addLog(`Smart Scan: ${SMART_STOP_THRESHOLD} consecutive all-done pages — no new projects. Stopping.`);
+            break;
+          }
+          if (!nextCursor) break;
+          cursor = nextCursor;
+          await sleep(300); // minimal delay — just pacing the API
+          continue;
+        } else {
+          consecutiveAllDonePages = 0; // reset on page with new content
+        }
+      }
 
       // Append to visible list
       for (const p of pageProjects) {
