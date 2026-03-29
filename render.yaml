@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: gitsim
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GITHUB_CLIENT_ID
+        sync: false   # set manually in Render dashboard
+      - key: GITHUB_CLIENT_SECRET
+        sync: false   # set manually in Render dashboard
+      - key: SESSION_SECRET
+        generateValue: true   # Render auto-generates a random value
+      - key: APP_URL
+        sync: false   # set to https://gitsim.onrender.com after first deploy
