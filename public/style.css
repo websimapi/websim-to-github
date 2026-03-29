@@ -93,6 +93,27 @@ header h1 {
   border-color: #10b981;
 }
 
+/* ---- Rate-limit wait row ---- */
+.wait-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: rgba(245,158,11,0.10);
+  border: 1px solid rgba(245,158,11,0.35);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--warn);
+}
+.wait-icon { flex-shrink: 0; }
+.wait-countdown {
+  margin-left: auto;
+  font-family: 'Fira Code', monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
 /* ---- Advanced collapsible section ---- */
 details.advanced-section {
   cursor: pointer;

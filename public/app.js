@@ -21,6 +21,10 @@ const progressWrap  = document.getElementById('progress-bar-wrap');
 const progressFill  = document.getElementById('progress-fill');
 const progressLabel = document.getElementById('progress-label');
 
+const waitRow      = document.getElementById('wait-row');
+const waitMsg      = document.getElementById('wait-msg');
+const waitCountdown = document.getElementById('wait-countdown');
+
 const checkpointBanner      = document.getElementById('checkpoint-banner');
 const checkpointInfo        = document.getElementById('checkpoint-info');
 const btnContinueCheckpoint = document.getElementById('btn-continue-checkpoint');
@@ -41,9 +45,11 @@ const projectList = document.getElementById('project-list');
 
 // ── State ─────────────────────────────────────────────────────────────────
 let pollTimer = null;
+let countdownTimer = null;
 let lastLogTs = 0;
 let savedRunState = null;
 let isGhConnected = false;
+let currentWaitUntil = null; // ms timestamp for rate-limit countdown
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 function esc(s) {
@@ -230,6 +236,36 @@ btnStop.addEventListener('click', async () => {
   await fetch('/api/process/stop', { method: 'POST' });
 });
 
+// ── Wait / rate-limit countdown ───────────────────────────────────────────
+function renderWait(d) {
+  if (!d.isWaiting || !d.waitUntil) {
+    waitRow.style.display = 'none';
+    currentWaitUntil = null;
+    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+    return;
+  }
+
+  currentWaitUntil = d.waitUntil;
+  const attempt = (d.waitAttempt ?? 0) + 1;
+  const total = 4; // BACKOFF_STEPS.length
+  waitMsg.textContent = `Rate limited by ${d.waitReason} — auto-retrying in`;
+  waitRow.style.display = '';
+  progressWrap.style.display = '';
+
+  function updateCountdown() {
+    const rem = Math.max(0, currentWaitUntil - Date.now());
+    const mins = Math.floor(rem / 60000);
+    const secs = Math.floor((rem % 60000) / 1000);
+    waitCountdown.textContent = `${mins}:${String(secs).padStart(2, '0')} (attempt ${attempt}/${total})`;
+    if (rem === 0 && countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+  }
+
+  updateCountdown();
+  if (!countdownTimer) {
+    countdownTimer = setInterval(updateCountdown, 1000);
+  }
+}
+
 // ── Polling ───────────────────────────────────────────────────────────────
 function startPolling() {
   if (pollTimer) clearInterval(pollTimer);
@@ -241,8 +277,9 @@ async function pollStatus() {
   if (!isGhConnected) return;
   try {
     const r = await fetch('/api/status');
-    if (r.status === 401) return; // not logged in, skip silently
+    if (r.status === 401) return;
     const d = await r.json();
+    renderWait(d);
     renderStatus(d);
 
     if (d.isRunning) {
@@ -250,6 +287,7 @@ async function pollStatus() {
       btnStop.disabled = false;
       progressWrap.style.display = '';
     } else {
+      waitRow.style.display = 'none';
       clearInterval(pollTimer);
       pollTimer = null;
       enableStart();
