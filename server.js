@@ -18,6 +18,9 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const APP_URL = (process.env.APP_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
 
+// Required for secure cookies to work correctly behind Render/Heroku/nginx proxies
+app.set('trust proxy', 1);
+
 app.use(express.json());
 app.use(session({
   secret: process.env.SESSION_SECRET || 'dev-secret-change-in-production',
